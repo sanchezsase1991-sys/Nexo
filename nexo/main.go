@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"strings"
 )
 
@@ -199,6 +200,26 @@ func main() {
 		fmt.Printf("  Observaciones: %d\n", pattern.ObservationCount)
 		fmt.Printf("  Peso: %.2f\n", pattern.Weight)
 
+	case "speak":
+		if len(cmdArgs) == 0 {
+			fmt.Fprintln(os.Stderr, "Uso: nexo speak <texto> [--lang es]")
+			os.Exit(1)
+		}
+		text := strings.Join(cmdArgs, " ")
+		lang := "es"
+		if idx := strings.Index(text, "--lang "); idx >= 0 {
+			lang = text[idx+6:]
+			text = strings.TrimSpace(text[:idx])
+		}
+		// Call Python TTS script
+		cmd := exec.Command("python3", "/root/primerModelo/nexo/tts_cli.py", text, "-l", lang)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "✗ Error en TTS: %v\n", err)
+			os.Exit(1)
+		}
+
 	default:
 		fmt.Fprintf(os.Stderr, "✗ Comando desconocido: %s\n\n", cmd)
 		help()
@@ -253,6 +274,7 @@ func help() {
 	fmt.Println("  prefs             Mostrar preferencias del usuario (PWS)")
 	fmt.Println("  align <query>     Ejecutar análisis de alineamiento")
 	fmt.Println("  pattern <texto>   Registrar patrón de comportamiento")
+	fmt.Println("  speak <texto>     Convertir texto a voz [--lang es]")
 	fmt.Println("  help              Mostrar esta ayuda")
 	fmt.Println()
 	fmt.Println("Variables de entorno:")
