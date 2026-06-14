@@ -94,5 +94,9 @@ func Store(db *sql.DB, text string, title string, importance float64) error {
 	fmt.Printf("   💡 Hechos: %d\n", factCount)
 	fmt.Printf("   ⭐ Importancia: %.2f\n", importance)
 
+	// PWS: Analyze user pattern and update style vector
+	AnalyzePattern(db, text, PatternTypeStore)
+	UpdateStyleVector(db, text)
+
 	return nil
 }

@@ -19,6 +19,9 @@ type ActivatedNode struct {
 func Recall(db *sql.DB, cfg *DbConfig, query string) error {
 	entities := ExtractEntities(query)
 
+	// PWS: Update style vector based on query
+	UpdateStyleVector(db, query)
+
 	result, err := SpreadActivation(db, cfg, query)
 	if err != nil {
 		return fmt.Errorf("spreading activation: %w", err)
@@ -93,6 +96,9 @@ func Recall(db *sql.DB, cfg *DbConfig, query string) error {
 
 // RecallBrief returns a compact memory summary for agent integration.
 func RecallBrief(db *sql.DB, cfg *DbConfig, query string) error {
+	// PWS: Update style vector based on query
+	UpdateStyleVector(db, query)
+
 	result, err := SpreadActivation(db, cfg, query)
 	if err != nil {
 		return err

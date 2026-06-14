@@ -22,6 +22,8 @@ type HandoffState struct {
 	HotConcepts     []string
 	Summary         string
 	DreamJournal    string
+	UserPreferences *UserPreferences
+	StyleVector     map[string]StyleVector
 }
 
 // Nucleus represents a strongly connected concept.
@@ -148,6 +150,16 @@ func Handoff(db *sql.DB, cfg *DbConfig) (*HandoffState, error) {
 	// 7. Generate summary
 	state.Summary = buildSummary(state)
 
+	// 8. PWS: Load user preferences and style vector
+	prefs, err := GetUserPreferences(db)
+	if err == nil {
+		state.UserPreferences = prefs
+	}
+	styleVec, err := GetStyleVector(db)
+	if err == nil {
+		state.StyleVector = styleVec
+	}
+
 	return state, nil
 }
 
@@ -259,6 +271,30 @@ func PrintHandoff(state *HandoffState) {
 						fmt.Printf("  Núcleos: %s\n", strings.Join(parts, ", "))
 					}
 				}
+			}
+		}
+		fmt.Println()
+	}
+
+	// User preferences (PWS)
+	if state.UserPreferences != nil && state.UserPreferences.Confidence > 0.1 {
+		fmt.Println("🎯 PREFERENCIAS DEL USUARIO (PWS):")
+		fmt.Printf("  Longitud: %s | Detalle: %s | Tono: %s\n",
+			state.UserPreferences.PreferredResponseLength,
+			state.UserPreferences.PreferredDetailLevel,
+			state.UserPreferences.PreferredTone)
+		fmt.Printf("  Confianza: %.0f%%\n", state.UserPreferences.AlignmentScore*100)
+
+		// Show top style dimensions
+		if state.StyleVector != nil {
+			var topStyles []string
+			for dim, sv := range state.StyleVector {
+				if sv.Samples > 5 {
+					topStyles = append(topStyles, fmt.Sprintf("%s: %.2f", dim, sv.Value))
+				}
+			}
+			if len(topStyles) > 0 {
+				fmt.Printf("  Estilo: %s\n", strings.Join(topStyles, ", "))
 			}
 		}
 		fmt.Println()

@@ -131,5 +131,36 @@ func SpreadActivation(db *sql.DB, cfg *DbConfig, query string) (*SpreadResult, e
 	var total int
 	db.QueryRow("SELECT COUNT(*) FROM activation WHERE intensity > ?", cfg.ActivationThreshold).Scan(&total)
 
+	// 7. PWS: Apply alignment bias post-processing
+	ApplyAlignmentBias(db)
+
 	return &SpreadResult{Seeds: seedCount, Total: total}, nil
+}
+
+// ApplyAlignmentBias applies user preference weights to activated nodes
+func ApplyAlignmentBias(db *sql.DB) {
+	// Get alignment bias
+	bias, err := GetAlignmentBias(db, nil)
+	if err != nil || bias.Confidence < 0.1 {
+		return // Not enough data to apply bias
+	}
+
+	// Apply node weights to activated nodes
+	for nodeID, weight := range bias.NodeWeights {
+		if weight != 1.0 {
+			db.Exec(
+				"UPDATE activation SET intensity = MIN(intensity * ?, 2.0) WHERE node_id = ?",
+				weight, nodeID,
+			)
+		}
+	}
+
+	// Apply style-based global adjustment
+	if bias.StyleBias.Samples > 10 {
+		globalMultiplier := 1.0 + (bias.StyleBias.Value-0.5)*0.1*bias.Confidence
+		db.Exec(
+			"UPDATE activation SET intensity = MIN(intensity * ?, 2.0) WHERE intensity > 0.1",
+			globalMultiplier,
+		)
+	}
 }

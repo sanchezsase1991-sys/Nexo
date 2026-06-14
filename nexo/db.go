@@ -115,6 +115,34 @@ func InitDB(db *sql.DB) error {
 		key TEXT PRIMARY KEY,
 		value TEXT
 	);
+
+	CREATE TABLE IF NOT EXISTS user_patterns (
+		id TEXT PRIMARY KEY,
+		pattern_type TEXT NOT NULL,
+		pattern_data TEXT NOT NULL DEFAULT '{}',
+		observation_count INTEGER DEFAULT 1,
+		first_seen INTEGER NOT NULL,
+		last_seen INTEGER NOT NULL,
+		weight REAL DEFAULT 1.0
+	);
+	CREATE INDEX IF NOT EXISTS idx_user_patterns_type ON user_patterns(pattern_type);
+
+	CREATE TABLE IF NOT EXISTS user_preferences (
+		id TEXT PRIMARY KEY,
+		pref_key TEXT NOT NULL UNIQUE,
+		pref_value TEXT NOT NULL DEFAULT '{}',
+		confidence REAL DEFAULT 0.5,
+		updated_at INTEGER NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_user_preferences_key ON user_preferences(pref_key);
+
+	CREATE TABLE IF NOT EXISTS style_vectors (
+		id TEXT PRIMARY KEY,
+		dimension TEXT NOT NULL UNIQUE,
+		value REAL DEFAULT 0.5,
+		sample_size INTEGER DEFAULT 0,
+		updated_at INTEGER NOT NULL
+	);
 	`
 
 	_, err := db.Exec(schema)

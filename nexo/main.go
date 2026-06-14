@@ -160,6 +160,45 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "prefs":
+		if err := ShowPreferences(db); err != nil {
+			fmt.Fprintf(os.Stderr, "✗ Error: %v\n", err)
+			os.Exit(1)
+		}
+
+	case "align":
+		fmt.Println("🎯 Ejecutando análisis de alineamiento completo...")
+		// Run a recall to update style vectors
+		if len(cmdArgs) > 0 {
+			query := strings.Join(cmdArgs, " ")
+			UpdateStyleVector(db, query)
+		}
+		bias, err := GetAlignmentBias(db, nil)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("  Confianza: %.0f%%\n", bias.Confidence*100)
+		fmt.Printf("  Estilo dominante: %s (%.2f)\n", bias.StyleBias.Dimension, bias.StyleBias.Value)
+		fmt.Printf("  Nodos con peso ajustado: %d\n", len(bias.NodeWeights))
+
+	case "pattern":
+		if len(cmdArgs) == 0 {
+			fmt.Fprintln(os.Stderr, "Uso: nexo pattern <texto>")
+			os.Exit(1)
+		}
+		text := strings.Join(cmdArgs, " ")
+		pattern, err := AnalyzePattern(db, text, PatternTypeQuery)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "✗ Error: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Printf("✅ Patrón registrado:\n")
+		fmt.Printf("  ID: %s\n", pattern.ID)
+		fmt.Printf("  Tipo: %s\n", pattern.PatternType)
+		fmt.Printf("  Observaciones: %d\n", pattern.ObservationCount)
+		fmt.Printf("  Peso: %.2f\n", pattern.Weight)
+
 	default:
 		fmt.Fprintf(os.Stderr, "✗ Comando desconocido: %s\n\n", cmd)
 		help()
@@ -211,6 +250,9 @@ func help() {
 	fmt.Println("  handoff           🌅 Protocolo de despertar")
 	fmt.Println("  entities <texto>  Extraer entidades (debug)")
 	fmt.Println("  propagate <query> Ejecutar propagación (debug)")
+	fmt.Println("  prefs             Mostrar preferencias del usuario (PWS)")
+	fmt.Println("  align <query>     Ejecutar análisis de alineamiento")
+	fmt.Println("  pattern <texto>   Registrar patrón de comportamiento")
 	fmt.Println("  help              Mostrar esta ayuda")
 	fmt.Println()
 	fmt.Println("Variables de entorno:")
