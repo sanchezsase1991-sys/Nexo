@@ -183,6 +183,12 @@ func main() {
 		fmt.Printf("  Estilo dominante: %s (%.2f)\n", bias.StyleBias.Dimension, bias.StyleBias.Value)
 		fmt.Printf("  Nodos con peso ajustado: %d\n", len(bias.NodeWeights))
 
+	case "pws-session":
+		if err := ShowSessionSummary(db); err != nil {
+			fmt.Fprintf(os.Stderr, "✗ Error: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "pattern":
 		if len(cmdArgs) == 0 {
 			fmt.Fprintln(os.Stderr, "Uso: nexo pattern <texto>")
@@ -273,8 +279,8 @@ func help() {
 	fmt.Println("  propagate <query> Ejecutar propagación (debug)")
 	fmt.Println("  prefs             Mostrar preferencias del usuario (PWS)")
 	fmt.Println("  align <query>     Ejecutar análisis de alineamiento")
+	fmt.Println("  pws-session       Consolidar y mostrar resumen de sesión")
 	fmt.Println("  pattern <texto>   Registrar patrón de comportamiento")
-	fmt.Println("  speak <texto>     Convertir texto a voz [--lang es]")
 	fmt.Println("  help              Mostrar esta ayuda")
 	fmt.Println()
 	fmt.Println("Variables de entorno:")

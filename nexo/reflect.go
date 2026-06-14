@@ -194,6 +194,10 @@ func Journal(db *sql.DB) error {
 
 	fmt.Printf("📓 Diario de sesión guardado: %s\n", label)
 	fmt.Printf("   Episodios enlazados: %d\n", len(recentEpisodes))
+	
+	// PWS: Consolidate session preferences
+	ConsolidateSessionPreferences(db)
+	fmt.Println("   📊 Preferencias de sesión consolidadas")
 
 	return nil
 }

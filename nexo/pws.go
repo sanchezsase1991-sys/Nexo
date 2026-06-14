@@ -548,3 +548,280 @@ func unmarshalPatternData(s string) PatternData {
 	json.Unmarshal([]byte(s), &data)
 	return data
 }
+
+// SessionSummary holds aggregated session statistics
+type SessionSummary struct {
+	TotalQueries    int
+	TotalStores     int
+	AvgQueryLength  float64
+	AvgComplexity   float64
+	QuestionRatio   float64
+	TopPatterns     []PatternData
+	Timestamp       int64
+}
+
+// ConsolidateSessionPreferences analyzes session patterns and updates preferences
+func ConsolidateSessionPreferences(db *sql.DB) (*SessionSummary, error) {
+	now := nowMs()
+	
+	// Get recent patterns (from last 24 hours for better consolidation)
+	oneDayAgo := now - 86400
+	
+	rows, err := db.Query(`
+		SELECT pattern_type, pattern_data, observation_count, weight
+		FROM user_patterns 
+		WHERE last_seen > ?
+		ORDER BY last_seen DESC
+	`, oneDayAgo)
+	if err != nil {
+		return nil, fmt.Errorf("querying session patterns: %w", err)
+	}
+	defer rows.Close()
+	
+	summary := &SessionSummary{
+		Timestamp: now,
+	}
+	
+	var totalLength float64
+	var totalComplexity float64
+	var totalQuestions float64
+	var patternCount float64
+	
+	for rows.Next() {
+		var patternType, patternDataJSON string
+		var obsCount int
+		var weight float64
+		
+		if err := rows.Scan(&patternType, &patternDataJSON, &obsCount, &weight); err != nil {
+			continue
+		}
+		
+		// Count by type
+		switch patternType {
+		case PatternTypeQuery:
+			summary.TotalQueries += obsCount
+		case PatternTypeStore:
+			summary.TotalStores += obsCount
+		}
+		
+		// Parse pattern data
+		data := unmarshalPatternData(patternDataJSON)
+		totalLength += data.AvgLength * float64(obsCount)
+		totalComplexity += data.Complexity * float64(obsCount)
+		totalQuestions += data.QuestionRatio * float64(obsCount)
+		patternCount += float64(obsCount)
+		
+		summary.TopPatterns = append(summary.TopPatterns, data)
+	}
+	
+	// Calculate averages
+	if patternCount > 0 {
+		summary.AvgQueryLength = totalLength / patternCount
+		summary.AvgComplexity = totalComplexity / patternCount
+		summary.QuestionRatio = totalQuestions / patternCount
+	}
+	
+	// Update style vectors based on session trends
+	updateStyleFromSession(db, summary)
+	
+	// Update user preferences
+	updatePreferencesFromSession(db, summary)
+	
+	// Store session summary as reflection
+	storeSessionSummary(db, summary)
+	
+	return summary, nil
+}
+
+// updateStyleFromSession updates style vectors based on session patterns
+func updateStyleFromSession(db *sql.DB, summary *SessionSummary) {
+	now := nowMs()
+	
+	// Update verbosity based on average query length
+	if summary.AvgQueryLength > 0 {
+		verbosityValue := math.Min(summary.AvgQueryLength/200.0, 1.0) // Normalize
+		updateSingleStyle(db, "verbosity", verbosityValue, now)
+	}
+	
+	// Update complexity
+	if summary.AvgComplexity > 0 {
+		updateSingleStyle(db, "complexity", summary.AvgComplexity, now)
+	}
+	
+	// Update directness based on question ratio
+	if summary.QuestionRatio > 0 {
+		updateSingleStyle(db, "directness", summary.QuestionRatio, now)
+	}
+}
+
+// updateSingleStyle updates a single style dimension
+func updateSingleStyle(db *sql.DB, dimension string, value float64, now int64) {
+	var currentVal float64
+	var samples int
+	
+	err := db.QueryRow(
+		"SELECT value, sample_size FROM style_vectors WHERE dimension = ?", dimension,
+	).Scan(&currentVal, &samples)
+	
+	if err == nil {
+		// Exponential moving average with session weight
+		newSamples := samples + 1
+		alpha := 0.3 // Higher weight for session data
+		newVal := currentVal*(1-alpha) + value*alpha
+		
+		db.Exec(
+			"UPDATE style_vectors SET value = ?, sample_size = ?, updated_at = ? WHERE dimension = ?",
+			newVal, newSamples, now, dimension,
+		)
+	} else {
+		// Insert new
+		id := makeID("style")
+		db.Exec(
+			"INSERT INTO style_vectors (id, dimension, value, sample_size, updated_at) VALUES (?, ?, ?, 1, ?)",
+			id, dimension, value, now,
+		)
+	}
+}
+
+// updatePreferencesFromSession updates user preferences based on session
+func updatePreferencesFromSession(db *sql.DB, summary *SessionSummary) {
+	now := nowMs()
+	
+	// Determine preferred response length
+	var prefLength string
+	switch {
+	case summary.AvgQueryLength < 50:
+		prefLength = "short"
+	case summary.AvgQueryLength < 150:
+		prefLength = "medium"
+	default:
+		prefLength = "long"
+	}
+	
+	// Determine preferred detail level
+	var prefDetail string
+	switch {
+	case summary.AvgComplexity < 0.3:
+		prefDetail = "brief"
+	case summary.AvgComplexity < 0.6:
+		prefDetail = "moderate"
+	default:
+		prefDetail = "comprehensive"
+	}
+	
+	// Determine preferred tone
+	var prefTone string
+	if summary.QuestionRatio > 0.5 {
+		prefTone = "inquisitive"
+	} else if summary.AvgComplexity > 0.7 {
+		prefTone = "technical"
+	} else {
+		prefTone = "casual"
+	}
+	
+	// Calculate confidence based on sample count
+	totalSamples := summary.TotalQueries + summary.TotalStores
+	confidence := math.Min(float64(totalSamples)/10.0, 1.0)
+	
+	// Store preferences
+	prefs := UserPreferences{
+		PreferredResponseLength: prefLength,
+		PreferredDetailLevel:    prefDetail,
+		PreferredTone:           prefTone,
+		AlignmentScore:          confidence,
+		Confidence:              confidence,
+	}
+	
+	prefsJSON, _ := json.Marshal(prefs)
+	
+	// Upsert preferences
+	_, err := db.Exec(`
+		INSERT INTO user_preferences (id, pref_key, pref_value, confidence, updated_at)
+		VALUES (?, 'session_preferences', ?, ?, ?)
+		ON CONFLICT(pref_key) DO UPDATE SET
+			pref_value = ?,
+			confidence = ?,
+			updated_at = ?
+	`, makeID("pref"), string(prefsJSON), confidence, now, string(prefsJSON), confidence, now)
+	
+	if err != nil {
+		fmt.Printf("⚠️ Error guardando preferencias: %v\n", err)
+	}
+}
+
+// storeSessionSummary stores the session summary as a reflection
+func storeSessionSummary(db *sql.DB, summary *SessionSummary) {
+	now := nowMs()
+	
+	// Build summary text
+	var parts []string
+	parts = append(parts, "=== RESUMEN DE SESIÓN PWS ===")
+	parts = append(parts, fmt.Sprintf("Queries: %d | Stores: %d", summary.TotalQueries, summary.TotalStores))
+	parts = append(parts, fmt.Sprintf("Longitud promedio: %.0f chars", summary.AvgQueryLength))
+	parts = append(parts, fmt.Sprintf("Complejidad: %.2f", summary.AvgComplexity))
+	parts = append(parts, fmt.Sprintf("Ratio preguntas: %.2f", summary.QuestionRatio))
+	
+	// Top patterns
+	if len(summary.TopPatterns) > 0 {
+		parts = append(parts, "\nPatrones detectados:")
+		for i, p := range summary.TopPatterns {
+			if i >= 3 {
+				break
+			}
+			parts = append(parts, fmt.Sprintf("  - Longitud: %.0f, Complejidad: %.2f", p.AvgLength, p.Complexity))
+		}
+	}
+	
+	summaryText := strings.Join(parts, "\n")
+	
+	// Create reflection node
+	id := makeID("reflection")
+	label := "📊 Resumen PWS — sesión consolidada"
+	
+	db.Exec(
+		"INSERT INTO nodes (id, type, label, content, metadata, created_at, updated_at) VALUES (?, 'reflection', ?, ?, '{}', ?, ?)",
+		id, label, summaryText, now, now,
+	)
+	
+	// Link to recent episodes
+	var recentEp string
+	err := db.QueryRow("SELECT id FROM nodes WHERE type = 'episode' ORDER BY created_at DESC LIMIT 1").Scan(&recentEp)
+	if err == nil {
+		AddEdge(db, id, recentEp, "temporal", 0.8)
+	}
+}
+
+// ShowSessionSummary displays the current session PWS summary
+func ShowSessionSummary(db *sql.DB) error {
+	summary, err := ConsolidateSessionPreferences(db)
+	if err != nil {
+		return err
+	}
+	
+	fmt.Println("╔══════════════════════════════════════════════════╗")
+	fmt.Println("║     📊 PWS — Resumen de Sesión                  ║")
+	fmt.Println("╚══════════════════════════════════════════════════╝")
+	fmt.Println()
+	
+	fmt.Printf("🔍 Queries: %d\n", summary.TotalQueries)
+	fmt.Printf("💾 Stores: %d\n", summary.TotalStores)
+	fmt.Printf("📏 Longitud promedio: %.0f caracteres\n", summary.AvgQueryLength)
+	fmt.Printf("🧠 Complejidad: %.2f\n", summary.AvgComplexity)
+	fmt.Printf("❓ Ratio preguntas: %.2f\n", summary.QuestionRatio)
+	fmt.Println()
+	
+	// Show updated preferences
+	prefs, err := GetUserPreferences(db)
+	if err == nil {
+		fmt.Println("⚙️  Preferencias actualizadas:")
+		fmt.Printf("  Longitud: %s\n", prefs.PreferredResponseLength)
+		fmt.Printf("  Detalle: %s\n", prefs.PreferredDetailLevel)
+		fmt.Printf("  Tono: %s\n", prefs.PreferredTone)
+		fmt.Printf("  Confianza: %.0f%%\n", prefs.Confidence*100)
+	}
+	
+	fmt.Println()
+	fmt.Println("═══════════════════════════════════════════════════")
+	
+	return nil
+}
