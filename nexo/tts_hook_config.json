@@ -1,8 +1,0 @@
-{
-  "enabled": true,
-  "auto_tts": false,
-  "default_lang": "es",
-  "max_length": 2000,
-  "clean_text": true,
-  "save_history": true
-}
