@@ -1,236 +1,328 @@
 package main
 
 import (
-	"context"
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
-
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// NexoVersion is the version of the Nexo MCP server
-const NexoVersion = "1.0.0"
+const (
+	ServerName    = "nexo-memory"
+	ServerVersion = "1.0.0"
+)
 
-// NexoServer holds the MCP server and configuration
-type NexoServer struct {
-	server *mcp.Server
-	nexoBin string
+type JSONRPCRequest struct {
+	JSONRPC string      `json:"jsonrpc"`
+	ID      interface{} `json:"id"`
+	Method  string      `json:"method"`
+	Params  interface{} `json:"params,omitempty"`
 }
 
-// NewNexoServer creates a new Nexo MCP server
-func NewNexoServer() *NexoServer {
-	nexoBin := os.Getenv("NEXO_BIN")
+type JSONRPCResponse struct {
+	JSONRPC string      `json:"jsonrpc"`
+	ID      interface{} `json:"id"`
+	Result  interface{} `json:"result,omitempty"`
+	Error   interface{} `json:"error,omitempty"`
+}
+
+type Tool struct {
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	InputSchema interface{} `json:"inputSchema"`
+}
+
+type ToolCallParams struct {
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+type TextContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
+}
+
+type ToolResult struct {
+	Content []TextContent `json:"content"`
+	IsError bool          `json:"isError,omitempty"`
+}
+
+type InitializeResult struct {
+	ProtocolVersion string      `json:"protocolVersion"`
+	Capabilities    interface{} `json:"capabilities"`
+	ServerInfo      ServerInfo  `json:"serverInfo"`
+}
+
+type ServerInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+var nexoBin string
+
+func init() {
+	nexoBin = os.Getenv("NEXO_BIN")
 	if nexoBin == "" {
 		nexoBin = "/usr/local/bin/cortex"
 	}
-
-	return &NexoServer{
-		nexoBin: nexoBin,
-	}
 }
 
-// runNexo executes a nexo command and returns output
-func (s *NexoServer) runNexo(cmd string, args ...string) (string, error) {
+func runNexo(cmd string, args ...string) (string, error) {
 	fullCmd := append([]string{cmd}, args...)
-	result, err := exec.Command(s.nexoBin, fullCmd...).CombinedOutput()
+	result, err := exec.Command(nexoBin, fullCmd...).CombinedOutput()
 	if err != nil {
-		return string(result), fmt.Errorf("nexo error: %w\n%s", err, result)
+		return string(result), fmt.Errorf("nexo error: %w", err)
 	}
 	return string(result), nil
 }
 
-// SetupServer configures the MCP server with all tools
-func (s *NexoServer) SetupServer() *mcp.Server {
-	s.server = mcp.NewServer(
-		&mcp.Implementation{
-			Name:    "nexo-memory",
-			Version: NexoVersion,
-		},
-		nil,
-	)
-
-	// Register tools
-	s.registerTools()
-
-	return s.server
-}
-
-// registerTools registers all Nexo MCP tools
-func (s *NexoServer) registerTools() {
-	// Handoff tool
-	mcp.AddTool(s.server,
-		&mcp.Tool{
+func getTools() []Tool {
+	return []Tool{
+		{
 			Name:        "handoff",
 			Description: "Wake up Nexo and load full context (identity, memory, preferences)",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
 		},
-		s.handleHandoff,
-	)
-
-	// Recall tool
-	mcp.AddTool(s.server,
-		&mcp.Tool{
+		{
 			Name:        "recall",
 			Description: "Recall associative memory context for a query",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{
+						"type":        "string",
+						"description": "Query to recall from memory",
+					},
+					"brief": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Return brief format (default: false)",
+						"default":     false,
+					},
+				},
+				"required": []string{"query"},
+			},
 		},
-		s.handleRecall,
-	)
-
-	// Store tool
-	mcp.AddTool(s.server,
-		&mcp.Tool{
+		{
 			Name:        "store",
 			Description: "Store text in memory as an episode",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"text": map[string]interface{}{
+						"type":        "string",
+						"description": "Text to store in memory",
+					},
+					"title": map[string]interface{}{
+						"type":        "string",
+						"description": "Title for the episode",
+					},
+					"importance": map[string]interface{}{
+						"type":        "number",
+						"description": "Importance level (0.0-1.0)",
+						"default":     0.5,
+					},
+				},
+				"required": []string{"text"},
+			},
 		},
-		s.handleStore,
-	)
-
-	// Reflect tool
-	mcp.AddTool(s.server,
-		&mcp.Tool{
+		{
 			Name:        "reflect",
 			Description: "Create a reflection linked to current context",
+			InputSchema: map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"text": map[string]interface{}{
+						"type":        "string",
+						"description": "Reflection text/insight",
+					},
+				},
+				"required": []string{"text"},
+			},
 		},
-		s.handleReflect,
-	)
-
-	// Journal tool
-	mcp.AddTool(s.server,
-		&mcp.Tool{
+		{
 			Name:        "journal",
 			Description: "Save session journal and consolidate PWS preferences",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
 		},
-		s.handleJournal,
-	)
-
-	// Prefs tool
-	mcp.AddTool(s.server,
-		&mcp.Tool{
+		{
 			Name:        "prefs",
 			Description: "Show user preferences (PWS)",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
 		},
-		s.handlePrefs,
-	)
-
-	// Stats tool
-	mcp.AddTool(s.server,
-		&mcp.Tool{
+		{
 			Name:        "stats",
 			Description: "Show memory graph statistics",
+			InputSchema: map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
 		},
-		s.handleStats,
-	)
+	}
 }
 
-// Tool input types
-type RecallInput struct {
-	Query  string `json:"query"`
-	Brief  bool   `json:"brief,omitempty"`
+func handleToolCall(params ToolCallParams) ToolResult {
+	var args map[string]interface{}
+	if len(params.Arguments) > 0 {
+		json.Unmarshal(params.Arguments, &args)
+	}
+
+	switch params.Name {
+	case "handoff":
+		output, err := runNexo("handoff")
+		if err != nil {
+			return ToolResult{Content: []TextContent{{Type: "text", Text: err.Error()}}, IsError: true}
+		}
+		return ToolResult{Content: []TextContent{{Type: "text", Text: output}}}
+
+	case "recall":
+		query, _ := args["query"].(string)
+		brief, _ := args["brief"].(bool)
+		cmd := "recall"
+		if brief {
+			cmd = "recall-brief"
+		}
+		output, err := runNexo(cmd, query)
+		if err != nil {
+			return ToolResult{Content: []TextContent{{Type: "text", Text: err.Error()}}, IsError: true}
+		}
+		return ToolResult{Content: []TextContent{{Type: "text", Text: output}}}
+
+	case "store":
+		text, _ := args["text"].(string)
+		title, _ := args["title"].(string)
+		importance, _ := args["importance"].(float64)
+
+		cmdArgs := []string{text}
+		if title != "" {
+			cmdArgs = append(cmdArgs, "--title", title)
+		}
+		if importance > 0 {
+			cmdArgs = append(cmdArgs, "--importance", fmt.Sprintf("%.2f", importance))
+		}
+
+		output, err := runNexo("store", cmdArgs...)
+		if err != nil {
+			return ToolResult{Content: []TextContent{{Type: "text", Text: err.Error()}}, IsError: true}
+		}
+		return ToolResult{Content: []TextContent{{Type: "text", Text: output}}}
+
+	case "reflect":
+		text, _ := args["text"].(string)
+		output, err := runNexo("reflect", text)
+		if err != nil {
+			return ToolResult{Content: []TextContent{{Type: "text", Text: err.Error()}}, IsError: true}
+		}
+		return ToolResult{Content: []TextContent{{Type: "text", Text: output}}}
+
+	case "journal":
+		output, err := runNexo("journal")
+		if err != nil {
+			return ToolResult{Content: []TextContent{{Type: "text", Text: err.Error()}}, IsError: true}
+		}
+		return ToolResult{Content: []TextContent{{Type: "text", Text: output}}}
+
+	case "prefs":
+		output, err := runNexo("prefs")
+		if err != nil {
+			return ToolResult{Content: []TextContent{{Type: "text", Text: err.Error()}}, IsError: true}
+		}
+		return ToolResult{Content: []TextContent{{Type: "text", Text: output}}}
+
+	case "stats":
+		output, err := runNexo("stats")
+		if err != nil {
+			return ToolResult{Content: []TextContent{{Type: "text", Text: err.Error()}}, IsError: true}
+		}
+		return ToolResult{Content: []TextContent{{Type: "text", Text: output}}}
+
+	default:
+		return ToolResult{Content: []TextContent{{Type: "text", Text: "Unknown tool: " + params.Name}}, IsError: true}
+	}
 }
 
-type StoreInput struct {
-	Text        string  `json:"text"`
-	Title       string  `json:"title,omitempty"`
-	Importance  float64 `json:"importance,omitempty"`
+func sendResponse(id interface{}, result interface{}) {
+	resp := JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Result:  result,
+	}
+	data, _ := json.Marshal(resp)
+	fmt.Println(string(data))
 }
 
-type ReflectInput struct {
-	Text string `json:"text"`
-}
-
-// Tool handlers
-func (s *NexoServer) handleHandoff(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	output, err := s.runNexo("handoff")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
+func sendError(id interface{}, message string) {
+	resp := JSONRPCResponse{
+		JSONRPC: "2.0",
+		ID:      id,
+		Error: map[string]interface{}{
+			"code":    -32603,
+			"message": message,
+		},
 	}
-	return mcp.NewToolResultText(output), nil
-}
-
-func (s *NexoServer) handleRecall(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var input RecallInput
-	if err := req.Params.Arguments.Unmarshal(&input); err != nil {
-		return mcp.NewToolResultError("invalid input: " + err.Error()), nil
-	}
-
-	cmd := "recall"
-	if input.Brief {
-		cmd = "recall-brief"
-	}
-
-	output, err := s.runNexo(cmd, input.Query)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	return mcp.NewToolResultText(output), nil
-}
-
-func (s *NexoServer) handleStore(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var input StoreInput
-	if err := req.Params.Arguments.Unmarshal(&input); err != nil {
-		return mcp.NewToolResultError("invalid input: " + err.Error()), nil
-	}
-
-	args := []string{input.Text}
-	if input.Title != "" {
-		args = append(args, "--title", input.Title)
-	}
-	if input.Importance > 0 {
-		args = append(args, "--importance", fmt.Sprintf("%.2f", input.Importance))
-	}
-
-	output, err := s.runNexo("store", args...)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	return mcp.NewToolResultText(output), nil
-}
-
-func (s *NexoServer) handleReflect(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	var input ReflectInput
-	if err := req.Params.Arguments.Unmarshal(&input); err != nil {
-		return mcp.NewToolResultError("invalid input: " + err.Error()), nil
-	}
-
-	output, err := s.runNexo("reflect", input.Text)
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	return mcp.NewToolResultText(output), nil
-}
-
-func (s *NexoServer) handleJournal(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	output, err := s.runNexo("journal")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	return mcp.NewToolResultText(output), nil
-}
-
-func (s *NexoServer) handlePrefs(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	output, err := s.runNexo("prefs")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	return mcp.NewToolResultText(output), nil
-}
-
-func (s *NexoServer) handleStats(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	output, err := s.runNexo("stats")
-	if err != nil {
-		return mcp.NewToolResultError(err.Error()), nil
-	}
-	return mcp.NewToolResultText(output), nil
+	data, _ := json.Marshal(resp)
+	fmt.Println(string(data))
 }
 
 func main() {
-	server := NewNexoServer()
-	mcpServer := server.SetupServer()
+	scanner := bufio.NewScanner(os.Stdin)
+	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
 
-	// Run over stdio
-	if err := mcpServer.Run(context.Background(), &mcp.StdioTransport{}); err != nil {
-		fmt.Fprintf(os.Stderr, "Error running server: %v\n", err)
-		os.Exit(1)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+
+		var req JSONRPCRequest
+		if err := json.Unmarshal([]byte(line), &req); err != nil {
+			continue
+		}
+
+		switch req.Method {
+		case "initialize":
+			sendResponse(req.ID, InitializeResult{
+				ProtocolVersion: "2024-11-05",
+				Capabilities: map[string]interface{}{
+					"tools": map[string]interface{}{},
+				},
+				ServerInfo: ServerInfo{
+					Name:    ServerName,
+					Version: ServerVersion,
+				},
+			})
+
+		case "notifications/initialized":
+			// No response needed for notifications
+
+		case "tools/list":
+			sendResponse(req.ID, map[string]interface{}{
+				"tools": getTools(),
+			})
+
+		case "tools/call":
+			var params ToolCallParams
+			if paramsData, ok := req.Params.(map[string]interface{}); ok {
+				params.Name, _ = paramsData["name"].(string)
+				if args, ok := paramsData["arguments"].(map[string]interface{}); ok {
+					params.Arguments, _ = json.Marshal(args)
+				}
+			}
+			result := handleToolCall(params)
+			sendResponse(req.ID, result)
+
+		default:
+			sendError(req.ID, "Method not found: "+req.Method)
+		}
 	}
 }
