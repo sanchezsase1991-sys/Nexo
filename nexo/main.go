@@ -16,6 +16,12 @@ func main() {
 		os.Exit(0)
 	}
 
+	// MCP server mode
+	if args[0] == "--mcp" {
+		RunMCP()
+		return
+	}
+
 	cmd := args[0]
 	cmdArgs := args[1:]
 
