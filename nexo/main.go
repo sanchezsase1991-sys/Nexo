@@ -22,6 +22,16 @@ func main() {
 		return
 	}
 
+	// SSE server mode (HTTP)
+	if args[0] == "--sse" {
+		addr := ":8765"
+		if len(args) > 1 {
+			addr = args[1]
+		}
+		RunSSE(addr)
+		return
+	}
+
 	cmd := args[0]
 	cmdArgs := args[1:]
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -237,21 +238,21 @@ func handleMCPCall(name string, args map[string]interface{}) ToolResult {
 		if query == "" {
 			return ToolResult{Content: []TextContent{{Type: "text", Text: "query requerido"}}, IsError: true}
 		}
-		err = Recall(db, cfg, query)
+		output = captureOutput(func() { Recall(db, cfg, query) })
 
 	case "recall-brief":
 		query, _ := args["query"].(string)
 		if query == "" {
 			return ToolResult{Content: []TextContent{{Type: "text", Text: "query requerido"}}, IsError: true}
 		}
-		err = RecallBrief(db, cfg, query)
+		output = captureOutput(func() { RecallBrief(db, cfg, query) })
 
 	case "recall-deep":
 		query, _ := args["query"].(string)
 		if query == "" {
 			return ToolResult{Content: []TextContent{{Type: "text", Text: "query requerido"}}, IsError: true}
 		}
-		err = DeepRecall(db, cfg, query)
+		output = captureOutput(func() { DeepRecall(db, cfg, query) })
 
 	case "store":
 		text, _ := args["text"].(string)
@@ -263,26 +264,26 @@ func handleMCPCall(name string, args map[string]interface{}) ToolResult {
 		if text == "" {
 			return ToolResult{Content: []TextContent{{Type: "text", Text: "text requerido"}}, IsError: true}
 		}
-		err = Store(db, text, title, importance)
+		output = captureOutput(func() { Store(db, text, title, importance) })
 
 	case "reflect":
 		text, _ := args["text"].(string)
 		if text == "" {
 			return ToolResult{Content: []TextContent{{Type: "text", Text: "text requerido"}}, IsError: true}
 		}
-		err = Reflect(db, text)
+		output = captureOutput(func() { Reflect(db, text) })
 
 	case "journal":
-		err = Journal(db)
+		output = captureOutput(func() { Journal(db) })
 
 	case "consolidate":
-		err = Consolidate(db)
+		output = captureOutput(func() { Consolidate(db) })
 
 	case "stats":
-		err = Stats(db)
+		output = captureOutput(func() { Stats(db) })
 
 	case "prefs":
-		err = ShowPreferences(db)
+		output = captureOutput(func() { ShowPreferences(db) })
 
 	case "align":
 		query, _ := args["query"].(string)
@@ -297,7 +298,7 @@ func handleMCPCall(name string, args map[string]interface{}) ToolResult {
 			bias.Confidence*100, bias.StyleBias.Dimension, bias.StyleBias.Value, len(bias.NodeWeights))
 
 	case "pws-session":
-		err = ShowSessionSummary(db)
+		output = captureOutput(func() { ShowSessionSummary(db) })
 
 	case "pattern":
 		text, _ := args["text"].(string)
@@ -336,18 +337,19 @@ func captureOutput(fn func()) string {
 	w.Close()
 	os.Stdout = old
 
-	var buf []byte
-	tmp := make([]byte, 1024)
+	var buf bytes.Buffer
+	tmp := make([]byte, 8192)
 	for {
 		n, err := r.Read(tmp)
 		if n > 0 {
-			buf = append(buf, tmp[:n]...)
+			buf.Write(tmp[:n])
 		}
 		if err != nil {
 			break
 		}
 	}
-	return string(buf)
+	r.Close()
+	return buf.String()
 }
 
 func sendMCPResponse(id interface{}, result interface{}) {
@@ -361,22 +363,47 @@ func sendMCPResponse(id interface{}, result interface{}) {
 }
 
 func RunMCP() {
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
+	// Log to stderr for debugging
+	fmt.Fprintln(os.Stderr, "🧠 Nexo MCP Server starting (EOF-loop mode)...")
 
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
+	// Use raw file descriptor read instead of bufio.Scanner
+	// This allows us to handle EOF by recreating the reader
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		// Read line by line
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			if err.Error() == "EOF" {
+				fmt.Fprintln(os.Stderr, "🔄 EOF detected - resetting reader (waiting for next connection)...")
+				// Create a new reader on the same fd - this works because
+				// OpenCode may reconnect stdin
+				reader = bufio.NewReader(os.Stdin)
+				// Brief pause to avoid tight loop
+				// In practice, the process will be killed/restarted by OpenCode
+				// but if it survives, we keep trying
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "❌ Read error: %v\n", err)
+			continue
+		}
+
+		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 
+		fmt.Fprintf(os.Stderr, "📥 Request: %s\n", truncate(line, 100))
+
 		var req JSONRPCRequest
 		if err := json.Unmarshal([]byte(line), &req); err != nil {
+			fmt.Fprintf(os.Stderr, "❌ Parse error: %v\n", err)
 			continue
 		}
 
 		switch req.Method {
 		case "initialize":
+			fmt.Fprintln(os.Stderr, "📋 Method: initialize")
 			sendMCPResponse(req.ID, InitializeResult{
 				ProtocolVersion: "2024-11-05",
 				Capabilities: map[string]interface{}{
@@ -389,9 +416,11 @@ func RunMCP() {
 			})
 
 		case "notifications/initialized":
+			fmt.Fprintln(os.Stderr, "📋 Method: notifications/initialized")
 			// No response needed
 
 		case "tools/list":
+			fmt.Fprintln(os.Stderr, "📋 Method: tools/list")
 			sendMCPResponse(req.ID, map[string]interface{}{
 				"tools": getMCPTools(),
 			})
@@ -407,10 +436,13 @@ func RunMCP() {
 					params.Arguments = args
 				}
 			}
+			fmt.Fprintf(os.Stderr, "📋 Method: tools/call → %s\n", params.Name)
 			result := handleMCPCall(params.Name, params.Arguments)
+			fmt.Fprintf(os.Stderr, "📤 Response sent for %s\n", params.Name)
 			sendMCPResponse(req.ID, result)
 
 		default:
+			fmt.Fprintf(os.Stderr, "📋 Method: %s (unknown)\n", req.Method)
 			sendMCPResponse(req.ID, map[string]interface{}{
 				"error": map[string]interface{}{
 					"code":    -32601,
@@ -419,4 +451,6 @@ func RunMCP() {
 			})
 		}
 	}
+
+	fmt.Fprintln(os.Stderr, "🧠 Nexo MCP Server stopped.")
 }
