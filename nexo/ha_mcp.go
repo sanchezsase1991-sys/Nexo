@@ -16,47 +16,6 @@ const (
 	HAServerVersion = "1.0.0"
 )
 
-type JSONRPCRequest struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      interface{} `json:"id"`
-	Method  string      `json:"method"`
-	Params  interface{} `json:"params,omitempty"`
-}
-
-type JSONRPCResponse struct {
-	JSONRPC string      `json:"jsonrpc"`
-	ID      interface{} `json:"id"`
-	Result  interface{} `json:"result,omitempty"`
-	Error   interface{} `json:"error,omitempty"`
-}
-
-type Tool struct {
-	Name        string      `json:"name"`
-	Description string      `json:"description"`
-	InputSchema interface{} `json:"inputSchema"`
-}
-
-type TextContent struct {
-	Type string `json:"type"`
-	Text string `json:"text"`
-}
-
-type ToolResult struct {
-	Content []TextContent `json:"content"`
-	IsError bool          `json:"isError,omitempty"`
-}
-
-type InitializeResult struct {
-	ProtocolVersion string      `json:"protocolVersion"`
-	Capabilities    interface{} `json:"capabilities"`
-	ServerInfo      ServerInfo  `json:"serverInfo"`
-}
-
-type ServerInfo struct {
-	Name    string `json:"name"`
-	Version string `json:"version"`
-}
-
 var (
 	haURL   string
 	haToken string
@@ -413,16 +372,6 @@ func handleHACall(name string, args map[string]interface{}) ToolResult {
 	}
 }
 
-func sendMCPResponse(id interface{}, result interface{}) {
-	resp := JSONRPCResponse{
-		JSONRPC: "2.0",
-		ID:      id,
-		Result:  result,
-	}
-	data, _ := json.Marshal(resp)
-	fmt.Println(string(data))
-}
-
 func RunHAMCP() {
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 1024*1024), 1024*1024)
@@ -484,7 +433,8 @@ func RunHAMCP() {
 	}
 }
 
-func main() {
+// RunHAMCPMain ejecuta el servidor MCP de Home Assistant (para uso standalone)
+func RunHAMCPMain() {
 	if haToken == "" {
 		fmt.Fprintln(os.Stderr, "Error: HA_TOKEN not set")
 		fmt.Fprintln(os.Stderr, "Usage: HA_TOKEN=<token> HA_URL=<url> ./ha-mcp")

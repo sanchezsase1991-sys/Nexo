@@ -4,11 +4,46 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
+// LSTM global instance (RAM cognitiva)
+var workingMemory *WorkingMemory
+
+// getLSTMPath retorna la ruta del archivo de estado LSTM
+func getLSTMPath() string {
+	dir := os.Getenv("MEMORY_CORTEX_DIR")
+	if dir == "" {
+		dir = "/root/.memory-cortex"
+	}
+	return filepath.Join(dir, "lstm-state.json")
+}
+
+// initLSTM inicializa o carga la memoria de trabajo
+func initLSTM() {
+	workingMemory = NewWorkingMemory()
+	stateFile := getLSTMPath()
+	if err := workingMemory.LoadFromFile(stateFile); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Error cargando LSTM: %v\n", err)
+	}
+}
+
+// saveLSTM persiste el estado LSTM
+func saveLSTM() {
+	if workingMemory == nil {
+		return
+	}
+	if err := workingMemory.SaveToFile(getLSTMPath()); err != nil {
+		fmt.Fprintf(os.Stderr, "⚠️  Error guardando LSTM: %v\n", err)
+	}
+}
+
 func main() {
 	cfg := &DefaultConfig
+
+	// Inicializar LSTM (RAM cognitiva)
+	initLSTM()
 
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -61,20 +96,30 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Uso: nexo recall <query>")
 			os.Exit(1)
 		}
-		if err := Recall(db, cfg, query); err != nil {
+		// LSTM: Procesar input y expandir query
+		entities := ExtractEntities(query)
+		lstmResult := workingMemory.ProcessInput(query, entities)
+		expandedQuery := lstmResult.ResolvedInput
+		if err := Recall(db, cfg, expandedQuery); err != nil {
 			fmt.Fprintf(os.Stderr, "✗ Error: %v\n", err)
 			os.Exit(1)
 		}
+		saveLSTM()
 
 	case "recall-brief":
 		query := strings.Join(cmdArgs, " ")
 		if query == "" {
 			return
 		}
-		if err := RecallBrief(db, cfg, query); err != nil {
+		// LSTM: Procesar input y expandir query
+		entities := ExtractEntities(query)
+		lstmResult := workingMemory.ProcessInput(query, entities)
+		expandedQuery := lstmResult.ResolvedInput
+		if err := RecallBrief(db, cfg, expandedQuery); err != nil {
 			fmt.Fprintf(os.Stderr, "✗ Error: %v\n", err)
 			os.Exit(1)
 		}
+		saveLSTM()
 
 	case "store":
 		if len(cmdArgs) == 0 {
@@ -120,7 +165,12 @@ func main() {
 			fmt.Fprintf(os.Stderr, "✗ Error en handoff: %v\n", err)
 			os.Exit(1)
 		}
+		// LSTM: Incluir estado de memoria de trabajo
+		state.LSTMState = workingMemory.GetState()
 		PrintHandoff(state)
+		// Reset LSTM para nueva sesión
+		workingMemory = NewWorkingMemory()
+		saveLSTM()
 
 	case "entities":
 		text := strings.Join(cmdArgs, " ")
@@ -155,10 +205,19 @@ func main() {
 			fmt.Fprintln(os.Stderr, "Uso: nexo reflect <insight>")
 			os.Exit(1)
 		}
-		if err := Reflect(db, text); err != nil {
+		// LSTM: Procesar input y obtener contexto
+		entities := ExtractEntities(text)
+		lstmResult := workingMemory.ProcessInput(text, entities)
+		// Usar contexto LSTM para enriquecer la reflexión
+		enrichedText := text
+		if lstmResult.ActiveTopic != "" {
+			enrichedText = fmt.Sprintf("%s [tema activo: %s]", text, lstmResult.ActiveTopic)
+		}
+		if err := Reflect(db, enrichedText); err != nil {
 			fmt.Fprintf(os.Stderr, "✗ Error: %v\n", err)
 			os.Exit(1)
 		}
+		saveLSTM()
 
 	case "recall-deep":
 		query := strings.Join(cmdArgs, " ")
@@ -242,6 +301,47 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "lstm":
+		// Mostrar estado de la memoria de trabajo
+		state := workingMemory.GetState()
+		fmt.Println()
+		fmt.Println("╔══════════════════════════════════════════╗")
+		fmt.Println("║     🧠 LSTM — RAM Cognitiva              ║")
+		fmt.Println("║     Memoria de Trabajo Temporal          ║")
+		fmt.Println("╚══════════════════════════════════════════╝")
+		fmt.Println()
+		fmt.Printf("📊 Turnos: %d\n", state.TurnCount)
+		fmt.Printf("🎯 Tema activo: %s\n", workingMemory.ActiveTopic)
+		fmt.Printf("🔥 Intensidad tema: %.2f\n", workingMemory.TopicIntensity)
+		fmt.Println()
+		
+		if len(state.Concepts) > 0 {
+			fmt.Println("🏷️  CONCEPTOS ACTIVOS:")
+			for _, c := range state.Concepts {
+				bar := strings.Repeat("█", int(c.Weight*20))
+				fmt.Printf("  • %s — %.2f %s\n", c.Label, c.Weight, bar)
+			}
+			fmt.Println()
+		}
+		
+		if len(state.ContextWindow) > 0 {
+			fmt.Println("📋 VENTANA DE CONTEXTO:")
+			for _, e := range state.ContextWindow {
+				preview := e.Content
+				if len(preview) > 60 {
+					preview = preview[:60] + "..."
+				}
+				role := "👤"
+				if e.Role == "assistant" {
+					role = "🤖"
+				}
+				fmt.Printf("  %s %s\n", role, preview)
+			}
+			fmt.Println()
+		}
+		
+		fmt.Println("╚══════════════════════════════════════════╝")
+
 	default:
 		fmt.Fprintf(os.Stderr, "✗ Comando desconocido: %s\n\n", cmd)
 		help()
@@ -291,6 +391,7 @@ func help() {
 	fmt.Println("  consolidate       Ejecutar consolidación (sueño)")
 	fmt.Println("  stats             Mostrar estadísticas")
 	fmt.Println("  handoff           🌅 Protocolo de despertar")
+	fmt.Println("  lstm              🧠 Mostrar estado de memoria de trabajo")
 	fmt.Println("  entities <texto>  Extraer entidades (debug)")
 	fmt.Println("  propagate <query> Ejecutar propagación (debug)")
 	fmt.Println("  prefs             Mostrar preferencias del usuario (PWS)")

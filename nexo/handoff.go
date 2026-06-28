@@ -24,6 +24,7 @@ type HandoffState struct {
 	DreamJournal    string
 	UserPreferences *UserPreferences
 	StyleVector     map[string]StyleVector
+	LSTMState       *LSTMState      // Memoria de trabajo
 }
 
 // Nucleus represents a strongly connected concept.
@@ -296,6 +297,23 @@ func PrintHandoff(state *HandoffState) {
 			if len(topStyles) > 0 {
 				fmt.Printf("  Estilo: %s\n", strings.Join(topStyles, ", "))
 			}
+		}
+		fmt.Println()
+	}
+
+	// LSTM: Memoria de trabajo
+	if state.LSTMState != nil && state.LSTMState.TurnCount > 0 {
+		fmt.Println("🧠 MEMORIA DE TRABAJO (LSTM):")
+		fmt.Printf("  Turnos anteriores: %d\n", state.LSTMState.TurnCount)
+		if state.LSTMState.ActiveTopic != "" {
+			fmt.Printf("  Tema activo: %s\n", state.LSTMState.ActiveTopic)
+		}
+		if len(state.LSTMState.Concepts) > 0 {
+			var concepts []string
+			for _, c := range state.LSTMState.Concepts {
+				concepts = append(concepts, fmt.Sprintf("%s (%.2f)", c.Label, c.Weight))
+			}
+			fmt.Printf("  Conceptos activos: %s\n", strings.Join(concepts, ", "))
 		}
 		fmt.Println()
 	}
